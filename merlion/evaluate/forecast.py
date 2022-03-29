@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2021 salesforce.com, inc.
+# Copyright (c) 2022 salesforce.com, inc.
 # All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
 # For full license text, see the LICENSE file in the repo root or https://opensource.org/licenses/BSD-3-Clause
@@ -16,7 +16,7 @@ import numpy as np
 
 from merlion.evaluate.base import EvaluatorBase, EvaluatorConfig
 from merlion.models.forecast.base import ForecasterBase
-from merlion.utils import TimeSeries
+from merlion.utils import TimeSeries, UnivariateTimeSeries
 from merlion.utils.resample import granularity_str_to_seconds
 
 
@@ -29,9 +29,9 @@ class ForecastScoreAccumulator:
 
     def __init__(
         self,
-        ground_truth: TimeSeries,
-        predict: TimeSeries,
-        insample: TimeSeries = None,
+        ground_truth: Union[UnivariateTimeSeries, TimeSeries],
+        predict: Union[UnivariateTimeSeries, TimeSeries],
+        insample: Union[UnivariateTimeSeries, TimeSeries] = None,
         periodicity: int = 1,
         ub: TimeSeries = None,
         lb: TimeSeries = None,
@@ -39,16 +39,15 @@ class ForecastScoreAccumulator:
         """
         :param ground_truth: ground truth time series
         :param predict: predicted truth time series
-        :param insample (optional): time series used for training model.
-            This value is used for computing MSES, MSIS
+        :param insample (optional): time series used for training model. This value is used for computing MSES, MSIS
         :param periodicity (optional): periodicity. m=1 indicates the non-seasonal time series,
-            whereas m>1 indicates seasonal time series.
-            This value is used for computing MSES, MSIS.
-        :param ub (optional): upper bound of 95% prediction interval. This value is used for
-            computing MSIS
-        :param lb (optional): lower bound of 95% prediction interval. This value is used for
-            computing MSIS
+            whereas m>1 indicates seasonal time series. This value is used for computing MSES, MSIS.
+        :param ub (optional): upper bound of 95% prediction interval. This value is used for computing MSIS
+        :param lb (optional): lower bound of 95% prediction interval. This value is used for computing MSIS
         """
+        ground_truth = ground_truth.to_ts() if isinstance(ground_truth, UnivariateTimeSeries) else ground_truth
+        predict = predict.to_ts() if isinstance(predict, UnivariateTimeSeries) else predict
+        insample = insample.to_ts() if isinstance(insample, UnivariateTimeSeries) else insample
         t0, tf = predict.t0, predict.tf
         ground_truth = ground_truth.window(t0, tf, include_tf=True).align()
         self.ground_truth = ground_truth
@@ -130,6 +129,23 @@ class ForecastScoreAccumulator:
         if (scale < 1e-8).any():
             warnings.warn("Some values very close to 0, sMAPE might not be estimated accurately.")
         return np.mean(200.0 * errors / (scale + 1e-8))
+
+    def rmspe(self):
+        """
+        Root Mean Squared Percent Error (RMSPE)
+
+        For ground truth time series :math:`y` and predicted time series :math:`\\hat{y}`
+        of length :math:`T`, it is computed as
+
+        .. math:: 100 \\cdot \\sqrt{\\frac{1}{T}\\sum_{t=1}^T\\frac{(y_t - \\hat{y}_t)}{y_t}^2}.
+        """
+        self.check_before_eval()
+        predict_values = self.predict.univariates[self.predict.names[0]].np_values
+        ground_truth_values = self.ground_truth.univariates[self.ground_truth.names[0]].np_values
+        if (ground_truth_values < 1e-8).any():
+            warnings.warn("Some values very close to 0, RMSPE might not be estimated accurately.")
+        errors = ground_truth_values - predict_values
+        return 100 * np.sqrt(np.mean(np.square(errors / ground_truth_values)))
 
     def mase(self):
         """
@@ -240,6 +256,12 @@ class ForecastMetric(Enum):
     .. math::
         200 \\cdot \\frac{1}{T}\\sum_{t=1}^{T}{\\frac{\\left| y_t
         - \\hat{y}_t \\right|}{\\left| y_t \\right| + \\left| \\hat{y}_t \\right|}}.
+    """
+    RMSPE = partial(accumulate_forecast_score, metric=ForecastScoreAccumulator.rmspe)
+    """
+    Root Mean Square Percent Error is formulated as:
+    
+    .. math:: 100 \\cdot \\sqrt{\\frac{1}{T}\\sum_{t=1}^T\\frac{(y_t - \\hat{y}_t)}{y_t}^2}.
     """
     MASE = partial(accumulate_forecast_score, metric=ForecastScoreAccumulator.mase)
     """
